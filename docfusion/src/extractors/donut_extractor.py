@@ -10,8 +10,13 @@ or fails on a specific image.
 
 import re
 import json
-import torch
-from PIL import Image
+
+try:
+    import torch
+    from PIL import Image
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
 
 # Lazy-loaded globals to avoid import cost at module level
 _processor = None
@@ -29,6 +34,11 @@ def _ensure_donut_loaded():
 
     if _donut_available is not None:
         return _donut_available
+
+    if not _TORCH_AVAILABLE:
+        print("[DonutExtractor] torch not installed. Using heuristic fallback.")
+        _donut_available = False
+        return False
 
     try:
         from transformers import DonutProcessor, VisionEncoderDecoderModel
