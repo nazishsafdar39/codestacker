@@ -10,10 +10,10 @@ or fails on a specific image.
 
 import re
 import json
+from PIL import Image
 
 try:
     import torch
-    from PIL import Image
     _TORCH_AVAILABLE = True
 except ImportError:
     _TORCH_AVAILABLE = False
