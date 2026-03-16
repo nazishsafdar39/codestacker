@@ -1,0 +1,21 @@
+# Datasets (too large for git)
+SROIE2019/
+cord-v2-data/
+findit2/
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# OS
+__MACOSX/
+.ipynb_checkpoints/
+
+# Temp
+work_dir/
+predictions.jsonl
+temp_upload.jpg

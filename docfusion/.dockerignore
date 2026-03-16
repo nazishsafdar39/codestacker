@@ -1,0 +1,29 @@
+# Datasets (too large for Docker image)
+SROIE2019/
+cord-v2-data/
+findit2/
+dummy_data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Large files
+*.zip
+*.tar.gz
+work_dir/
+
+# IDE / OS
+.git/
+.gitignore
+__MACOSX/
+.ipynb_checkpoints/
+*.jpg
+*.png
+
+# Notebooks output
+notebooks/eda_outputs/
