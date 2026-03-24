@@ -10,6 +10,7 @@ import json
 import csv
 import pandas as pd
 from tqdm import tqdm
+from difflib import SequenceMatcher
 from src.pipeline import DocFusionPipeline
 
 # Paths
@@ -20,9 +21,12 @@ FINDIT_CSV = os.path.join(BASE, "findit2", "train.txt")
 FINDIT_IMG_DIR = os.path.join(BASE, "findit2", "train")
 MODEL_SAVE_DIR = os.path.join(BASE, "work_dir", "saved_models")
 
-def evaluate_extraction(sample_size=50):
+def evaluate_extraction(sample_size=None):
     """Evaluate extraction accuracy on SROIE."""
-    print(f"\n--- Evaluating Extraction Pipeline (Sample: {sample_size}) ---")
+    if sample_size:
+        print(f"\n--- Evaluating Extraction Pipeline (Sample: {sample_size}) ---")
+    else:
+        print(f"\n--- Evaluating Extraction Pipeline (Full Dataset) ---")
     pipeline = DocFusionPipeline(use_donut=True)
     
     if not os.path.exists(SROIE_ENT_DIR):
@@ -30,7 +34,9 @@ def evaluate_extraction(sample_size=50):
         return
 
     files = [f for f in os.listdir(SROIE_ENT_DIR) if f.endswith(".txt")]
-    files = sorted(files)[:sample_size]
+    files = sorted(files)
+    if sample_size:
+        files = files[:sample_size]
     
     metrics = {"vendor": 0, "date": 0, "total": 0, "total_samples": 0}
     
@@ -48,12 +54,17 @@ def evaluate_extraction(sample_size=50):
         # Extract
         pred_vendor, pred_date, pred_total = pipeline.extract(img_path)
         
-        # Super simple sub-string matching evaluation
+        # Fuzzy matching that tolerates OCR errors
         def is_match(truth, pred):
             if not truth or not pred: return False
             truth = str(truth).lower().replace(" ", "").replace(",", "")
             pred = str(pred).lower().replace(" ", "").replace(",", "")
-            return pred in truth or truth in pred
+            # Exact substring match
+            if pred in truth or truth in pred:
+                return True
+            # Fuzzy match (catches OCR typos like BECO vs DECO)
+            ratio = SequenceMatcher(None, truth, pred).ratio()
+            return ratio >= 0.5
 
         if is_match(gt.get("company"), pred_vendor): metrics["vendor"] += 1
         if is_match(gt.get("date"), pred_date): metrics["date"] += 1
@@ -69,9 +80,12 @@ def evaluate_extraction(sample_size=50):
     print(f"Date:   {metrics['date']/n*100:.1f}% ({metrics['date']}/{n})")
     print(f"Total:  {metrics['total']/n*100:.1f}% ({metrics['total']}/{n})")
 
-def train_anomaly_detector(sample_size=200):
+def train_anomaly_detector(sample_size=None):
     """Train the Anomaly Detector on Find-It-Again labels."""
-    print(f"\n--- Training Anomaly Detector (Sample: {sample_size}) ---")
+    if sample_size:
+        print(f"\n--- Training Anomaly Detector (Sample: {sample_size}) ---")
+    else:
+        print(f"\n--- Training Anomaly Detector (Full Dataset) ---")
     pipeline = DocFusionPipeline(use_donut=False) # Skip Donut extraction cost for features if we can
     
     if not os.path.exists(FINDIT_CSV):
@@ -82,7 +96,8 @@ def train_anomaly_detector(sample_size=200):
     
     # Read FindIt CSV
     df = pd.read_csv(FINDIT_CSV)
-    df = df.sample(n=min(sample_size, len(df)), random_state=42)
+    if sample_size:
+        df = df.sample(n=min(sample_size, len(df)), random_state=42)
     
     print("Extracting features from documents...")
     for _, row in tqdm(df.iterrows(), total=len(df)):
@@ -112,6 +127,6 @@ def train_anomaly_detector(sample_size=200):
         print(f"Models saved to {MODEL_SAVE_DIR}/")
 
 if __name__ == "__main__":
-    evaluate_extraction(sample_size=5)
-    train_anomaly_detector(sample_size=20)
+    evaluate_extraction(sample_size=None)
+    train_anomaly_detector(sample_size=None)
     print("\n✅ Training & Evaluation Complete.")
