@@ -1,0 +1,9 @@
+Host cs.fantastic-zebra-g4qvg9gqj646c976g.main
+	User codespace
+	ProxyCommand /usr/bin/gh cs ssh -c fantastic-zebra-g4qvg9gqj646c976g --stdio -- -i /home/codespace/.ssh/codespaces.auto
+	UserKnownHostsFile=/dev/null
+	StrictHostKeyChecking no
+	LogLevel quiet
+	ControlMaster auto
+	IdentityFile /home/codespace/.ssh/codespaces.auto
+

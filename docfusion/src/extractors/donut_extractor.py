@@ -47,7 +47,7 @@ def _ensure_donut_loaded():
         print(f"[DonutExtractor] Loading model '{MODEL_NAME}' on {_device}...")
 
         _processor = DonutProcessor.from_pretrained(MODEL_NAME)
-        _model = VisionEncoderDecoderModel.from_pretrained(MODEL_NAME)
+        _model = VisionEncoderDecoderModel.from_pretrained(MODEL_NAME, torch_dtype=torch.float16)
         _model.to(_device)
         _model.eval()
 
@@ -73,6 +73,8 @@ def _run_donut_inference(image: Image.Image) -> dict:
 
     # Prepare pixel values
     pixel_values = _processor(image, return_tensors="pt").pixel_values.to(_device)
+    if _model.dtype == torch.float16:
+        pixel_values = pixel_values.half()
 
     # Prepare decoder input ids from the task prompt
     decoder_input_ids = _processor.tokenizer(
@@ -193,6 +195,75 @@ def _extract_total_from_donut(parsed: dict) -> str | None:
                 pass
 
     return None
+
+
+def _run_donut_inference_batch(images: list) -> list[dict]:
+    """Run Donut model on a batch of PIL images."""
+    global _processor, _model, _device
+    task_prompt = "<s_cord-v2>"
+
+    pixel_values = _processor(images, return_tensors="pt").pixel_values.to(_device)
+    if _model.dtype == torch.float16:
+        pixel_values = pixel_values.half()
+
+    decoder_input_ids = _processor.tokenizer(
+        [task_prompt] * len(images), add_special_tokens=False, return_tensors="pt"
+    ).input_ids.to(_device)
+
+    with torch.no_grad():
+        outputs = _model.generate(
+            pixel_values,
+            decoder_input_ids=decoder_input_ids,
+            max_length=_model.decoder.config.max_position_embeddings,
+            pad_token_id=_processor.tokenizer.pad_token_id,
+            eos_token_id=_processor.tokenizer.eos_token_id,
+            use_cache=True,
+            num_beams=1,
+            bad_words_ids=[[_processor.tokenizer.unk_token_id]],
+            return_dict_in_generate=True,
+        )
+
+    sequences = _processor.batch_decode(outputs.sequences)
+    results = []
+    for sequence in sequences:
+        sequence = sequence.replace(_processor.tokenizer.eos_token, "").replace(
+            _processor.tokenizer.pad_token, ""
+        )
+        sequence = re.sub(r"<.*?>", "", sequence, count=1).strip()
+        try:
+            parsed = _processor.token2json(sequence)
+        except Exception:
+            parsed = {}
+        results.append(parsed)
+
+    return results
+
+
+def extract_fields_donut_batch(image_paths: list[str]) -> list[tuple]:
+    """
+    Batch extraction entry point using the Donut model.
+    """
+    available = _ensure_donut_loaded()
+
+    if not available:
+        from src.extractors.improved_extraction import extract_fields_ultra
+        return [extract_fields_ultra(ip) for ip in image_paths]
+
+    try:
+        images = [Image.open(p).convert("RGB") for p in image_paths]
+        parsed_list = _run_donut_inference_batch(images)
+
+        results = []
+        for parsed in parsed_list:
+            v = _extract_vendor_from_donut(parsed)
+            d = _extract_date_from_donut(parsed)
+            t = _extract_total_from_donut(parsed)
+            results.append((v, d, t, parsed))
+        return results
+    except Exception as e:
+        print(f"[DonutExtractor] Batch inference failed: {e}")
+        from src.extractors.improved_extraction import extract_fields_ultra
+        return [extract_fields_ultra(ip) for ip in image_paths]
 
 
 def extract_fields_donut(image_path: str) -> tuple:

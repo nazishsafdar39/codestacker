@@ -1,12 +1,17 @@
 """
 LLM-based Anomaly Summariser (Bonus Feature)
 =============================================
-Generates human-readable anomaly explanations.
-
-Uses a lightweight rule-template approach by default (zero external API calls).
-If a HuggingFace text-generation model is available, it can optionally use that.
+Generates human-readable anomaly explanations using OpenAI's API.
+If no API key is provided, it falls back to a rule-template approach.
 """
 
+import os
+
+try:
+    from openai import OpenAI
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
 
 def generate_anomaly_summary(
     vendor: str | None,
@@ -17,10 +22,28 @@ def generate_anomaly_summary(
 ) -> str:
     """
     Generate a human-readable summary explaining why a document
-    was flagged as genuine or suspicious.
-
-    Returns a 1-3 sentence natural-language explanation.
+    was flagged as genuine or suspicious. Always tries LLM first.
     """
+    
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if HAS_OPENAI and api_key:
+        try:
+            client = OpenAI(api_key=api_key)
+            prompt = f"Analyze this receipt data and provide a 2 sentence summary on whether it looks genuine or forged.\nVendor: {vendor}\nDate: {date}\nTotal: {total}\nAnomaly Flags Triggered?: {'Yes' if is_forged else 'No'}\nAny OCR text: {ocr_text[:150]}\nSummary:"
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a fraud detection assistant analyzing receipt data."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=60,
+                temperature=0.3
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"LLM API failed, falling back to rules: {e}")
+
+    # Fallback to rules if no key or API failure
     if is_forged == 0:
         return _genuine_summary(vendor, date, total)
     else:

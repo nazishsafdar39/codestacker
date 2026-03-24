@@ -3,7 +3,7 @@ import json
 import joblib
 from functools import lru_cache
 
-from src.extractors.donut_extractor import extract_fields_donut
+from src.extractors.donut_extractor import extract_fields_donut, extract_fields_donut_batch
 from src.extractors.improved_extraction import extract_fields_ultra
 from src.anomaly.anomaly_detector import AnomalyDetector
 
@@ -92,25 +92,63 @@ class DocFusionPipeline:
     # ------------------------------------------------------------------
     def extract(self, image_path: str):
         """
-        Extract (vendor, date, total).
-        Strategy: Donut first → Tesseract heuristic fallback.
+        Extract (vendor, date, total) using a hybrid strategy:
+          - Vendor & Date: Always use Tesseract+regex (best accuracy on SROIE)
+          - Total: Use Donut first (best for totals), Tesseract fallback
         """
+        # Step 1: Always run Tesseract for vendor and date
+        heur_vendor, heur_date, heur_total, heur_text = None, None, None, ""
+        try:
+            heur_vendor, heur_date, heur_total, heur_text = extract_fields_ultra(image_path)
+            self._ocr_cache[image_path] = heur_text
+        except Exception as e:
+            print(f"[Pipeline] Heuristic extraction failed: {e}")
+
+        # Step 2: Use Donut for total (it excels at numeric extraction)
+        donut_total = None
         if self.use_donut:
             try:
-                vendor, date, total, _extra = extract_fields_donut(image_path)
-                if vendor or date or total:
-                    return vendor, date, total
+                _v, _d, donut_total, _extra = extract_fields_donut(image_path)
             except Exception as e:
                 print(f"[Pipeline] Donut extraction failed: {e}")
 
-        try:
-            vendor, date, total, _text = extract_fields_ultra(image_path)
-            # Cache the OCR text from this call
-            self._ocr_cache[image_path] = _text
-            return vendor, date, total
-        except Exception as e:
-            print(f"[Pipeline] Heuristic extraction failed: {e}")
-            return None, None, None
+        # Step 3: Merge — Tesseract vendor/date, best available total
+        final_total = donut_total or heur_total
+        return heur_vendor, heur_date, final_total
+
+    def extract_batch(self, image_paths: list[str]) -> list[tuple]:
+        """
+        Batch extract using hybrid strategy:
+          - Vendor & Date: Tesseract+regex per image
+          - Total: Batch Donut inference, with Tesseract fallback
+        """
+        # Step 1: Run Tesseract for all images (vendor/date)
+        heur_results = []
+        for ip in image_paths:
+            try:
+                v, d, t, text = extract_fields_ultra(ip)
+                self._ocr_cache[ip] = text
+                heur_results.append((v, d, t))
+            except Exception:
+                heur_results.append((None, None, None))
+
+        # Step 2: Batch Donut for totals only
+        donut_totals = [None] * len(image_paths)
+        if self.use_donut:
+            try:
+                donut_results = extract_fields_donut_batch(image_paths)
+                for i, (_v, _d, t, _extra) in enumerate(donut_results):
+                    donut_totals[i] = t
+            except Exception as e:
+                print(f"[Pipeline] Batch Donut extraction failed: {e}")
+
+        # Step 3: Merge — Tesseract vendor/date + best total
+        output = []
+        for i in range(len(image_paths)):
+            hv, hd, ht = heur_results[i]
+            final_total = donut_totals[i] or ht
+            output.append((hv, hd, final_total))
+        return output
 
     # ------------------------------------------------------------------
     # Anomaly Detection

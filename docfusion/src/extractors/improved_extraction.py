@@ -5,7 +5,8 @@ import os
 
 def extract_vendor_smart(text):
     """
-    Smart vendor extraction that filters out common noise
+    Smart vendor extraction with multi-line merging and fuzzy scoring.
+    Many SROIE vendors span 2+ lines (e.g. 'BOOK TA .K\n(TAMAN DAYA) SDN BHD').
     """
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     
@@ -15,94 +16,100 @@ def extract_vendor_smart(text):
     # Noise patterns to skip
     noise_patterns = [
         r'^[\d\s\-\/\.\,]+$',           # Only numbers and punctuation
-        r'^[A-Z]\s*\d+',                 # Single letter + numbers (like "A 04025")
         r'^\d{4,}$',                     # Long number sequences
         r'^[\*\#\@\!\%\=\-]+$',          # Special characters only
-        r'^receipt',                     # Generic terms
+        r'^receipt$',                    # Generic terms
         r'^tax\s*invoice',
         r'^invoice',
+        r'^simplified\s+tax',
         r'^\w{1,2}$',                    # Very short (1-2 chars)
-        r'^company\s+reg',               # "Company Reg No."
-        r'^gst\s+reg',                   # "GST Reg No."
-        r'^lot\s+\d+',                   # "Lot 3..."
-        r'^tel\s*:',                     # "Tel : 03-..."
-        r'^no\.\s*\d+',                  # "No.50 , JALAN..."
-        r'^off\s+jalan',                 # "OFF JALAN..."
-        r'^\d+\s+jalan',                 # "19, JALAN..."
+        r'^company\s+reg',
+        r'^gst\s+(reg|id)',
+        r'^tel\s*[:\(]',
+        r'^fax\s*[:\(]',
+        r'^\d+\s*,\s*jalan',             # Address lines
+        r'^no\.?\s*\d+',                 # "No.50 , JALAN..."
+        r'^lot\s+\d+',
+        r'^off\s+jalan',
+        r'^taman\s+',
+        r'^jalan\s+',
+        r'^\d{5}\s+',                    # Postcode lines
+        r'^\(co\.?\s*reg',               # Registration number lines
     ]
     
     # Company indicators (bonus points for these)
     company_indicators = [
-        'sdn bhd', 'sdn. bhd.', 'sdn.bhd.',
+        'sdn bhd', 'sdn. bhd.', 'sdn.bhd.', 'son bhd',  # OCR variants
         'pte ltd', 'pte. ltd.', 'pvt ltd',
         'limited', 'ltd', 'llc', 'inc', 'corp',
         'corporation', 'company', 'co.',
         'enterprise', 'restaurant', 'cafe', 'restoran',
         'store', 'mart', 'shop', 'kedai',
         'bakeries', 'bakery', 'hardware', 'handicraft',
-        'tailoring', 'milk',
+        'tailoring', 'trading', 'motor', 'machinery',
+        'perniagaan', 'industri',  # Malay business terms
+        'gift', 'deco', 'beco',    # Common + OCR variants
     ]
     
-    candidates = []
-    
-    # Check first 10 lines (vendor usually near top)
-    for i, line in enumerate(lines[:10]):
-        # Skip if too short
-        if len(line) < 5:
-            continue
-        
-        # Skip if matches noise patterns
-        is_noise = False
+    def is_noise(line):
         for pattern in noise_patterns:
             if re.match(pattern, line, re.IGNORECASE):
-                is_noise = True
-                break
-        
-        if is_noise:
-            continue
-        
-        # Skip if mostly numbers (>60% digits)
-        digit_ratio = sum(c.isdigit() for c in line) / len(line)
+                return True
+        if len(line) < 4:
+            return True
+        digit_ratio = sum(c.isdigit() for c in line) / max(len(line), 1)
         if digit_ratio > 0.6:
-            continue
-        
-        # Skip if mostly special characters
-        special_ratio = sum(not c.isalnum() and not c.isspace() for c in line) / len(line)
+            return True
+        special_ratio = sum(not c.isalnum() and not c.isspace() for c in line) / max(len(line), 1)
         if special_ratio > 0.5:
+            return True
+        return False
+    
+    def score_candidate(text_candidate, position):
+        score = 0
+        lc = text_candidate.lower()
+        # Bonus: earlier position
+        score += max(0, (10 - position)) * 2
+        # Bonus: reasonable length
+        if 8 <= len(text_candidate) <= 80:
+            score += 10
+        # Bonus: company indicators (big)
+        for indicator in company_indicators:
+            if indicator in lc:
+                score += 50
+                break
+        # Bonus: has capital letters
+        if any(c.isupper() for c in text_candidate):
+            score += 5
+        # Bonus: high alpha ratio
+        alpha_ratio = sum(c.isalpha() for c in text_candidate) / max(len(text_candidate), 1)
+        score += alpha_ratio * 15
+        return score
+
+    candidates = []
+    
+    # Build candidates: single lines AND merged consecutive lines
+    for i, line in enumerate(lines[:12]):
+        if is_noise(line):
             continue
         
-        # Calculate score for this line
-        score = 0
+        # Single-line candidate
+        candidates.append((score_candidate(line, i), line, i))
         
-        # Bonus: earlier lines are more likely to be vendor
-        score += (10 - i) * 2
-        
-        # Bonus: longer lines (but not too long)
-        if 10 <= len(line) <= 60:
-            score += 10
-        
-        # Bonus: has company indicators
-        line_lower = line.lower()
-        for indicator in company_indicators:
-            if indicator in line_lower:
-                score += 50  # Big bonus!
-                break
-        
-        # Bonus: has capital letters (company names often capitalized)
-        if any(c.isupper() for c in line):
-            score += 5
-        
-        # Bonus: has alphabetic content
-        alpha_ratio = sum(c.isalpha() for c in line) / len(line)
-        score += alpha_ratio * 10
-        
-        candidates.append((score, line, i))
+        # Try merging with next line (many vendor names span 2 lines)
+        if i + 1 < len(lines) and not is_noise(lines[i + 1]):
+            merged = line + " " + lines[i + 1]
+            merged_score = score_candidate(merged, i)
+            # Bonus for merged lines that contain company indicators
+            # (indicates the name was split across lines)
+            if any(ind in merged.lower() for ind in company_indicators):
+                merged_score += 20
+            candidates.append((merged_score, merged, i))
     
     if not candidates:
-        # Fallback: return first non-empty line
         return lines[0] if lines else None
     
-    # Sort by score and return best candidate
+    # Sort by score descending
     candidates.sort(reverse=True, key=lambda x: x[0])
     best_vendor = candidates[0][1]
     
